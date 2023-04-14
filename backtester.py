@@ -55,7 +55,7 @@ class BacktestApp:
         performance_metrics['Winning Days'] = sum(self.track_record['Return'] > 0)
         performance_metrics['Losing Days'] = sum(self.track_record['Return'] < 0)
         performance_metrics['Win Rate'] = performance_metrics['Winning Days'] / (
-                    performance_metrics['Winning Days'] + performance_metrics['Losing Days'])
+                performance_metrics['Winning Days'] + performance_metrics['Losing Days'])
         performance_metrics['Average return'] = np.mean(self.track_record['Return'])
         performance_metrics['Max Drawdown'] = self.calculate_max_drawdown(self.track_record)
         performance_metrics['Sharpe Ratio'] = self.calculate_sharpe_ratio(self.track_record)
@@ -98,15 +98,17 @@ class BacktestApp:
 
 
 class IntradayBacktesterApp:
+    # For now only one symbol by one symbol
     def __init__(self, cash):
         self.data = None
         self.orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
         self.inventory = pd.DataFrame(columns=["symbol", "timestamp", "inventory"])
         self.pnl = pd.DataFrame(columns=["timestamp", "pnl"])
-        self.limit_orders = None
+        self.limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
         self.cash = cash
 
     def load_data(self, symbol, start_date, end_date):
+        # TODO: find good data provider. This might induce change in the code bellow in name of columns.
         current_date = dt.datetime.strptime(start_date, "%Y-%m-%d")
         end_date = dt.datetime.strptime(end_date, "%Y-%m-%d")
 
@@ -115,10 +117,20 @@ class IntradayBacktesterApp:
         else:
             while current_date + dt.timedelta(days=7) < end_date:
                 if self.data is None:
-                    self.data = yf.download(symbol, start=current_date, end=current_date + dt.timedelta(days=7), interval="1m")
+                    self.data = yf.download(symbol, start=current_date, end=current_date + dt.timedelta(days=7),
+                                            interval="1m")
                 else:
-                    new_data = yf.download(symbol, start=current_date, end=current_date + dt.timedelta(days=7), interval="1m")
-                    self.data = pd.concat(self.data, new_data)
+                    new_data = yf.download(symbol, start=current_date, end=current_date + dt.timedelta(days=7),
+                                           interval="1m")
+                    self.data = pd.concat((self.data, new_data))
+                current_date = current_date + dt.timedelta(days=8)
+            if current_date < end_date:
+                new_data = yf.download(symbol, start=current_date, end=end_date, interval="1m")
+                self.data = pd.concat((self.data, new_data))
+
+    def set_data(self, data):
+        """To input external data"""
+        self.data = data
 
     def execute_order(self, symbol, timestamp, action, quantity, price=None):
         """Execute an order and update orders, inventory, and profit/loss"""
@@ -126,6 +138,7 @@ class IntradayBacktesterApp:
             pd.Series([symbol, timestamp, action, quantity, price], index=self.orders.columns), ignore_index=True)
 
         try:
+            # TODO: Better access to inventory playing on timestamp
             inventory_qty = self.inventory.loc[(self.inventory["symbol"] == symbol)]["inventory"].values[-1]
         except:
             inventory_qty = 0
@@ -139,16 +152,22 @@ class IntradayBacktesterApp:
                 raise ValueError(f"No inventory for symbol '{symbol}' to execute '{action}' order")
             else:
                 if action == "Buy":
-                    self.inventory = self.inventory.append(pd.Series([symbol, timestamp, inventory_qty+quantity], index=self.inventory.columns), ignore_index=True)
+                    self.inventory = self.inventory.append(
+                        pd.Series([symbol, timestamp, inventory_qty + quantity], index=self.inventory.columns),
+                        ignore_index=True)
                     self.cash -= quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
                 elif action == "Sell":
                     if inventory_qty < quantity:
                         raise ValueError(f"Insufficient inventory for selling {quantity} shares of {symbol}")
                     else:
-                        self.inventory = self.inventory.append(pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns), ignore_index=True)
+                        self.inventory = self.inventory.append(
+                            pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns),
+                            ignore_index=True)
                         self.cash += quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
                 elif action == "Short-Sell":
-                    self.inventory = self.inventory.append(pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns), ignore_index=True)
+                    self.inventory = self.inventory.append(
+                        pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns),
+                        ignore_index=True)
                     self.cash += quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
         else:
             # keep limit order
@@ -163,10 +182,14 @@ class IntradayBacktesterApp:
         if self.data is None:
             raise ValueError("No data loaded. Please load data before backtesting.")
 
-        for index, prices in tqdm(self.data.iterrows()):
-            orders = strategy.update(index, data, self.inventory, self.limit_orders)
-            for order in orders:
-                self.execute_order(order["symbol"], index, order["action"], order["quantity"], prices["Close"])
+        self.initialize(strategy)
+
+        for index, prices in tqdm(self.data.iterrows(), desc="Running strategy: ", ncols=100, total=self.data.shape[0]):
+            orders = strategy.update(index, self.data, self.inventory, self.limit_orders, self.orders)
+            orders = pd.concat((self.limit_orders, orders))
+            self.limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
+            for _, order in orders.iterrows():
+                self.execute_order(order["symbol"], index, order["action"], order["quantity"], order["price"])
 
     def get_orders(self):
         """Get the list of executed orders"""
@@ -180,6 +203,18 @@ class IntradayBacktesterApp:
         """Get the profit/loss of the trading strategy over time"""
         return self.pnl
 
+    def initialize(self, strat):
+        symbols = strat.get_symbols()
+        min_time = self.data.index[0]
+        for s in symbols:
+            self.inventory = self.inventory.append(
+                pd.Series([s, min_time, 0], index=self.inventory.columns),
+                ignore_index=True)
+
     def update_pnl(self):
         # TODO: compute unrealised pnl over time
+        pass
+
+    def generate_plots(self):
+        # TODO
         pass
