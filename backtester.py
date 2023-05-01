@@ -101,10 +101,11 @@ class IntradayBacktesterApp:
     # For now only one symbol by one symbol
     def __init__(self, cash):
         self.data = None
-        self.orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
+        self.orderHistory = pd.DataFrame(columns=["symbol", "timestamp", "side", "quantity", "price"])
+        self.executed_orders = pd.DataFrame(columns=["symbol", "timestamp", "side", "quantity", "price", "market"])
         self.inventory = pd.DataFrame(columns=["symbol", "timestamp", "inventory"])
         self.pnl = pd.DataFrame(columns=["timestamp", "pnl"])
-        self.limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
+        self.outstanding_limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "side", "quantity", "price"])
         self.cash = cash
 
     def load_data(self, symbol, start_date, end_date):
@@ -132,48 +133,33 @@ class IntradayBacktesterApp:
         """To input external data"""
         self.data = data
 
-    def execute_order(self, symbol, timestamp, action, quantity, price=None):
+    def execute_order(self, symbol, timestamp, side, quantity, price=None):
         """Execute an order and update orders, inventory, and profit/loss"""
-        self.orders = self.orders.append(
-            pd.Series([symbol, timestamp, action, quantity, price], index=self.orders.columns), ignore_index=True)
+        self.orderHistory = self.orderHistory.append(
+            pd.Series([symbol, timestamp, side, quantity, price], index=self.orderHistory.columns), ignore_index=True)
 
-        try:
-            # TODO: Better access to inventory playing on timestamp
-            inventory_qty = self.inventory.loc[(self.inventory["symbol"] == symbol)]["inventory"].values[-1]
-        except:
-            inventory_qty = 0
+        inventory_qty = self.inventory.loc[(self.inventory["symbol"] == symbol) & (self.inventory.timestamp < timestamp)]["inventory"].values[0]
 
         valid_actions = ["Buy", "Sell", "Short-Sell"]
-        if action not in valid_actions:
-            raise ValueError(f"Invalid action '{action}', must be one of {valid_actions}")
+        if side not in valid_actions:
+            raise ValueError(f"Invalid side '{side}', must be one of {valid_actions}")
 
         if (price is None) or self.data.loc[timestamp, "Low"] <= price <= self.data.loc[timestamp, "High"]:
-            if action == "Sell" and (symbol not in self.inventory["symbol"].values):
-                raise ValueError(f"No inventory for symbol '{symbol}' to execute '{action}' order")
+
+            # What could go wrong
+            if symbol not in self.inventory["symbol"].values:
+                raise ValueError(f"No inventory for symbol '{symbol}' to execute '{side}' order")
+            elif side == "Sell" and inventory_qty < quantity:
+                raise ValueError(f"Insufficient inventory for selling {quantity} shares of {symbol}")
+
             else:
-                if action == "Buy":
-                    self.inventory = self.inventory.append(
-                        pd.Series([symbol, timestamp, inventory_qty + quantity], index=self.inventory.columns),
-                        ignore_index=True)
-                    self.cash -= quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
-                elif action == "Sell":
-                    if inventory_qty < quantity:
-                        raise ValueError(f"Insufficient inventory for selling {quantity} shares of {symbol}")
-                    else:
-                        self.inventory = self.inventory.append(
-                            pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns),
-                            ignore_index=True)
-                        self.cash += quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
-                elif action == "Short-Sell":
-                    self.inventory = self.inventory.append(
-                        pd.Series([symbol, timestamp, inventory_qty - quantity], index=self.inventory.columns),
-                        ignore_index=True)
-                    self.cash += quantity * (self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2
+                exec_price = ((self.data.loc[timestamp, "Low"] + self.data.loc[timestamp, "High"]) / 2) if (price is None) else price
+                self.executed_orders = self.executed_orders.append(pd.Series([symbol, timestamp, side, quantity, exec_price, price is None], index=self.inventory.columns), ignore_index=True)
+                self.inventory = self.inventory.append(pd.Series([symbol, timestamp, inventory_qty + (2*(side == "Buy")-1) * quantity], index=self.inventory.columns), ignore_index=True)
+                self.cash = self.cash + (2*(side != "Buy")-1) * quantity * exec_price
         else:
             # keep limit order
-            self.limit_orders = self.limit_orders.append(
-                pd.Series([symbol, timestamp, action, quantity, price], index=self.limit_orders.columns),
-                ignore_index=True)
+            self.outstanding_limit_orders = self.outstanding_limit_orders.append(pd.Series([symbol, timestamp, side, quantity, price], index=self.outstanding_limit_orders.columns), ignore_index=True)
 
         self.update_pnl()
 
@@ -184,16 +170,19 @@ class IntradayBacktesterApp:
 
         self.initialize(strategy)
 
-        for index, prices in tqdm(self.data.iterrows(), desc="Running strategy: ", ncols=100, total=self.data.shape[0]):
-            orders = strategy.update(index, self.data, self.inventory, self.limit_orders, self.orders)
-            orders = pd.concat((self.limit_orders, orders))
-            self.limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "action", "quantity", "price"])
+        for index, prices in tqdm(self.data.iloc[1:].iterrows(), desc="Running strategy: ", ncols=100,
+                                  total=self.data.shape[0]):
+            # at period T I can only take decision using data at end of period T-1, hence the shift
+            orders = strategy.update(index, self.data.shift(1), self.inventory, self.outstanding_limit_orders,
+                                     self.orderHistory)
+            orders = pd.concat((self.outstanding_limit_orders, orders))
+            self.outstanding_limit_orders = pd.DataFrame(columns=["symbol", "timestamp", "side", "quantity", "price"])
             for _, order in orders.iterrows():
-                self.execute_order(order["symbol"], index, order["action"], order["quantity"], order["price"])
+                self.execute_order(order["symbol"], index, order["side"], order["quantity"], order["price"])
 
     def get_orders(self):
         """Get the list of executed orders"""
-        return self.orders
+        return self.orderHistory
 
     def get_inventory(self):
         """Get the inventory of the trading strategy over time"""
