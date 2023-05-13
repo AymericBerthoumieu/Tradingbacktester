@@ -1,4 +1,4 @@
-from backtester import BacktestApp
+from Backtesters.backtester import BacktestApp
 from strategies.all_strategies import STRATEGIES
 import matplotlib.pyplot as plt
 

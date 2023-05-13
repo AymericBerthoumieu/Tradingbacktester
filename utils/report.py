@@ -20,6 +20,12 @@ class ReportGenerator:
         """
         self.report_data.append(f"<p>{text}</p>")
 
+    def add_title(self, text):
+        """
+        Add a title block to the report.
+        """
+        self.report_data.append(f"<h1>{text}</h1>")
+
     def add_dataframe(self, title, data):
         """
         Add a pandas DataFrame to the report with a title.

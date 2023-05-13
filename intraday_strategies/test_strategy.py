@@ -6,6 +6,7 @@ class TestStrategy(Strategy):
     def __init__(self, symbols, qty=1):
         Strategy.__init__(self, symbols)
         self.quantity = qty
+        self.name = "Test Strategy"
 
     def update(self, timestamp, prices_and_volume, inventory, limit_orders, all_orders):
         new_limit_orders = pd.DataFrame(columns=limit_orders.columns)

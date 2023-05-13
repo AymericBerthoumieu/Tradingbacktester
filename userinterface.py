@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
-from backtester import BacktestApp
+from Backtesters.backtester import BacktestApp
 from strategies.all_strategies import STRATEGIES
 
 # Create an instance of BacktestApp

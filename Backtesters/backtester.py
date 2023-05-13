@@ -238,12 +238,11 @@ class IntradayBacktesterApp:
         self.book_value = self.book_value.append(pd.Series([timestamp, current_value], index=self.book_value.columns), ignore_index=True)
 
     def add_summary_info(self, report, strat_name):
-        report.add_text("Intra-Day Strategy Report")
         report.add_text("")
         report.add_text("Strategy: " + strat_name)
         report.add_text("From: " + self.data.index.min().strftime("%Y-%m-%d %H:%M:%S"))
         report.add_text("To: " + self.data.index.max().strftime("%Y-%m-%d %H:%M:%S"))
-        report.add_text("Universe: " + self.data.symbol.unique())
+        report.add_text("Universe: " + ", ".join(self.data.symbol.unique()))
         report.add_text("Final Value: " + str(self.book_value.value.values[-1]))
         return report
 
@@ -255,15 +254,16 @@ class IntradayBacktesterApp:
         return report
 
     def plot_book_value(self, report):
-        fig = plt.figure(figsize=(15, 20))
+        fig = plt.figure(figsize=(15, 5))
         plt.plot(self.book_value.timestamp.values, self.book_value.value.values)
         plt.title("Book value (cash + MtM of inventory) over time")
         report.add_chart("Book value (cash + MtM of inventory) over time", fig)
         return report
 
     def generate_report(self, strat_name):
-        report_generator = ReportGenerator("../reports/" + strat_name.replace(" ", "_") + "_" + dt.datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".html")
+        report_generator = ReportGenerator("reports/" + strat_name.replace(" ", "_") + "_" + dt.datetime.now().strftime("%Y_%m_%d_%H_%M_%S") + ".html")
 
+        report_generator.add_title("Intra-Day Strategy Report")
         report_generator = self.add_summary_info(report_generator, strat_name)
         report_generator = self.add_break(report_generator)
         report_generator = self.plot_book_value(report_generator)
